@@ -64,8 +64,9 @@ app.post("/create-checkout-session", async (req, res) => {
 
     try {
 
-        const session = await stripe.checkout.sessions.create({
+        const baseUrl = `${req.protocol}://${req.get("host")}`;
 
+        const session = await stripe.checkout.sessions.create({
             mode: "payment",
 
             line_items: [
@@ -75,12 +76,11 @@ app.post("/create-checkout-session", async (req, res) => {
                 }
             ],
 
-            success_url: "http://localhost:3000/success?session_id={CHECKOUT_SESSION_ID}",
+            success_url: `${baseUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
 
-            cancel_url: "http://localhost:3000/cancel"
-
+            cancel_url: `${baseUrl}/cancel`
         });
-
+        
         res.json({
             url: session.url
         });
