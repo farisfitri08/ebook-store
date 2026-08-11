@@ -1,27 +1,38 @@
 const express = require("express");
 const Stripe = require("stripe");
 require("dotenv").config();
+
+const { Pool } = require("pg");
+
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL
+});
+
 const fs = require("fs");
 
 const path = require("path");
 
-const Database = require("better-sqlite3");
-
 const bcrypt = require("bcrypt");
-
-const db = new Database("database.db");
 
 const session = require("express-session");
 
-db.prepare(`
-    CREATE TABLE IF NOT EXISTS orders (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        email TEXT NOT NULL,
-        session_id TEXT NOT NULL UNIQUE,
-        status TEXT NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-`).run();
+pool.query("SELECT NOW()")
+.then(result => {
+    console.log("PostgreSQL connected!");
+    console.log(result.rows[0]);
+})
+.catch(error => {
+    console.error("PostgreSQL connection failed:", error);
+});
+
+pool.query("SELECT * FROM orders")
+.then(result => {
+    console.log("Orders from PostgreSQL:");
+    console.log(result.rows);
+})
+.catch(error => {
+    console.error(error);
+});
 
 const app = express();
 
@@ -106,7 +117,7 @@ app.get("/success", (req, res) => {
 app.post(
     "/webhook",
     express.raw({ type: "application/json" }),
-    (req, res) => {
+    async (req, res) => {
 
         const signature = req.headers["stripe-signature"];
 
@@ -140,29 +151,31 @@ app.post(
                 email: session.customer_details.email,
                 sessionId: session.id,
                 status: "PAID",
-                amount: session.amount_total
+                amount: session.amount_total / 100
             };
 
-            const existingOrder = db.prepare(`
+            const result = await pool.query(`
                 SELECT *
                 FROM orders
-                WHERE session_id = ?
-            `).get(order.sessionId);
+                WHERE session_id = $1
+            `, [order.sessionId]);
+
+            const existingOrder = result.rows[0];
 
             if (existingOrder) {
                 console.log("Order already exists. Skipping duplicate.");
                 return res.json({ received: true });
             }
 
-            db.prepare(`
+            await pool.query(`
                 INSERT INTO orders (email, session_id, status, amount)
-                VALUES (?, ?, ?, ?)
-            `).run(
+                VALUES ($1, $2, $3, $4)
+            `, [
                 order.email,
                 order.sessionId,
                 order.status,
                 order.amount
-            );
+            ]);
 
             console.log("Order saved to database!");
             console.log("Order:", order);
@@ -182,15 +195,17 @@ app.post(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-app.get("/download", (req, res) => {
+app.get("/download", async (req, res) => {
 
     const sessionId = req.query.session;
 
-    const order = db.prepare(`
+    const result = await pool.query(`
         SELECT *
         FROM orders
-        WHERE session_id = ?
-    `).get(sessionId);
+        WHERE session_id = $1
+    `, [sessionId]);
+
+    const order = result.rows[0];
 
     if (!order || order.status !== "PAID") {
         return res.status(403).send("Payment required.");
@@ -320,13 +335,15 @@ function requireAdmin(req, res, next) {
     next();
 }
 
-app.get("/admin/orders", requireAdmin, (req, res) => {
+app.get("/admin/orders", requireAdmin, async (req, res) => {
 
-    const orders = db.prepare(`
+    const result = await pool.query(`
         SELECT *
         FROM orders
         ORDER BY created_at DESC
-    `).all();
+    `);
+
+    const orders = result.rows;
 
     const totalOrders = orders.length;
 
@@ -343,7 +360,7 @@ app.get("/admin/orders", requireAdmin, (req, res) => {
                 <td>${order.email}</td>
                 <td>${order.session_id}</td>
                 <td>${order.status}</td>
-                <td>$${(order.amount / 100).toFixed(2)}</td>
+                <td>$${Number(order.amount).toFixed(2)}</td>
                 <td>${order.created_at}</td>
                 <td>
                     <a href="/admin/orders/${order.id}">
@@ -419,13 +436,15 @@ app.get("/admin/orders", requireAdmin, (req, res) => {
     `);
 });
 
-app.get("/admin/orders/:id", requireAdmin, (req, res) => {
+app.get("/admin/orders/:id", requireAdmin, async (req, res) => {
 
-    const order = db.prepare(`
+    const result = await pool.query(`
         SELECT *
         FROM orders
-        WHERE id = ?
-    `).get(req.params.id);
+        WHERE id = $1
+    `, [req.params.id]);
+
+    const order = result.rows[0];
 
     if (!order) {
         return res.status(404).send("Order not found.");
@@ -438,7 +457,7 @@ app.get("/admin/orders/:id", requireAdmin, (req, res) => {
 
         <p>Status: ${order.status}</p>
 
-        <p>Amount: $${(order.amount / 100).toFixed(2)}</p>
+        <p>Amount: $${Number(order.amount).toFixed(2)}</p>
 
         <p>Session ID: ${order.session_id}</p>
 
