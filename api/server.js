@@ -58,11 +58,6 @@ app.use(session({
     }
 }));
 
-// HOME
-app.get("/", (req, res) => {
-    res.send("Server is running!");
-});
-
 
 // STRIPE CHECKOUT
 app.post("/create-checkout-session", async (req, res) => {
